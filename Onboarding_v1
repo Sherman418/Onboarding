@@ -1,0 +1,65 @@
+<#
+This script performs the following:
+	-Creates AD account with the format: [first initial][last name]
+	-Sets a temporary password for that account
+	-Fills in all attributes of a user by department
+	-Creates a new home drive (personal Z drive) for that user
+	-Adds that user to all necessary security groups for their department
+  
+  This was designed with a hybrid environment in mind (on-prem AD w/ mail through O365)
+  
+	Future Plans:
+	-Creates an email address for that user and assigns it an O365 Business Premium license
+	-Adds that user to all necessary email distribution lists and O365 groups for that dept
+#>
+
+Import-Module ActiveDirectory
+
+# List out departments
+Write-Host "Select employee type: 1: Employee Type1 `n 2: Another department `n "
+
+$employeeType = Read-Host -Prompt 'Enter employee type'
+
+<# 
+Some of these variables are redundant and unneccessary
+I created them separately out of convenience
+#>
+$firstName = Read-Host -Prompt 'Enter first name '
+$lastName = Read-Host -Prompt 'Enter last name '
+$fullName = $firstName + " " + $lastName
+$firstInitial = $firstName.Substring(0,1)
+$userName = $firstInitial+$lastname
+$password = "Password" | ConvertTo-SecureString -AsPlainText -Force # Would recommend a more secure initial password...
+$email = $userName + "@domain.com"
+
+New-ADUser -UserPrincipalName $userName -SamAccountName $userName -Name $fullName -GivenName $firstName -Surname $lastName -DisplayName $fullName `
+-AccountPassword $password -ChangePasswordAtLogon $True -Enabled $True
+
+# Employee Type1
+if ( $employeeType -eq 1 ) {
+    Set-ADUser -Identity $userName -Office "Office" -Department "Dept" -Title "Title" -Manager manager
+	Get-ADUser $userName | Move-ADObject -TargetPath "OU=Department,OU=Users,DC=domain,DC=com"
+
+    Add-ADGroupMember -Identity GroupsForThisDept1 -Members $userName
+    Add-ADGroupMember -Identity GroupsForThisDept2 -Members $userName
+}
+
+# Another department
+if ( $employeeType -eq 2 ) {
+	Set-ADUser -Identity $userName -Office "OtherOffice" -Department "Dept2" -Title "Title" -Manager manager2
+	Get-ADUser $userName | Move-ADObject -TargetPath "OU=Department2,OU=Users,DC=domain,DC=com"
+
+    Add-ADGroupMember -Identity GroupsForThisDept1 -Members $userName
+    Add-ADGroupMember -Identity GroupsForThisDept2 -Members $userName
+}
+
+# Creates a new personal shared-drive folder on the file server
+$HomeDrive = 'Z:'
+$UserRoot = '\\fs01\Users$\'
+$HomeDirectory = $UserRoot+$userName
+Set-ADUser $userName -HomeDrive $HomeDrive -HomeDirectory $HomeDirectory
+New-Item -Path $HomeDirectory -Type Directory -Force
+
+# Groups that are meant to be accessed by all employees
+Add-ADGroupMember -Identity CommonDrive -Members $userName
+Add-ADGroupMember -Identity CommonDrive2 -Members $userName
