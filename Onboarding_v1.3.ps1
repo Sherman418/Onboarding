@@ -4,18 +4,36 @@
 	.FUNCTIONALITY
 	This script performs the following:
 	*Creates AD account with the format: [first initial][last name]
-		**If username already taken in AD, adds a "2" to the end of it, IE: JSmith2 in the event there are x2 John Smith users.
-		**This acts as a loop and continues until it finds an available username, IE: JSmith3, JSmith4, etc.
+		**If username already taken in AD, adds a "2" to the end of it, IE: JSmith2 in the event there are x2 John Smith users, JSmith3 if there are 3x, etc.
 	*Sets a temporary password for that account
 	*Fills in all attributes of a user by department
 	*Creates a new home drive for that user
 	*Adds that user to all necessary security groups for their department
 	*Asks if this user needs an email address, and if so, creates an O365 account and assigns it an O365 Business Premium license
 		**Adds that user to all necessary email distribution lists and O365 groups for that dept
-
 #>
 
 Import-Module ActiveDirectory
+
+function Create-Email {
+    $emailAddress = $userName + "@domain.com"
+    $UserCredential = Get-Credential
+	$Session = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri https://outlook.office365.com/powershell-liveid/ -Credential $UserCredential -Authentication Basic -AllowRedirection
+	Import-PSSession $Session -DisableNameChecking
+	Connect-MsolService -Credential $UserCredential
+	
+	New-MsolUser -DisplayName $fullName -FirstName $firstName -LastName $lastName -UserPrincipalName $emailAddress `
+	-UsageLocation US -LicenseAssignment company:O365_BUSINESS_PREMIUM -Password "Password123" -ForceChangePassword $true
+}
+
+# Creates a new personal shared-drive folder on the file server (ex path: fs01\Users$\)
+function Create-Directory {
+	$HomeDrive = 'Z:'
+	$UserRoot = '\\fs01\Users$\'
+	$HomeDirectory = $UserRoot+$userName
+	Set-ADUser $userName -HomeDrive $HomeDrive -HomeDirectory $HomeDirectory
+	New-Item -Path $HomeDirectory -Type Directory -Force
+}
 
 # List out employee types by department 
 Write-Host "Select employee type: 1: Employee Type1 `n 2: Another department `n "
@@ -47,33 +65,25 @@ while ($userExists -eq $true) {
 
 $password = "Password123" | ConvertTo-SecureString -AsPlainText -Force # Would recommend a more secure initial password...
 $email = Read-Host -Prompt 'User receiving an email address? (Y/N) '
-$emailAddress = $userName + "@domain.com"
 
-if ( $email -eq 'Y' ) {
-	$UserCredential = Get-Credential
-	$Session = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri https://outlook.office365.com/powershell-liveid/ -Credential $UserCredential -Authentication Basic -AllowRedirection
-	Import-PSSession $Session -DisableNameChecking
-	Connect-MsolService -Credential $UserCredential
-	
-	New-MsolUser -DisplayName $fullName -FirstName $firstName -LastName $lastName -UserPrincipalName $emailAddress `
-	-UsageLocation US -LicenseAssignment company:O365_BUSINESS_PREMIUM -Password "Password123" -ForceChangePassword $true
+if ($email -eq 'Y') {
+	Create-Email
 }
 
 New-ADUser -UserPrincipalName $userName -SamAccountName $userName -Name $fullName -GivenName $firstName -Surname $lastName -DisplayName $fullName `
 -AccountPassword $password -ChangePasswordAtLogon $True -Enabled $True
 
-# Employee Type1
-if ( $employeeType -eq 1 ) {
-    Set-ADUser -Identity $userName -Office "Office" -Department "Dept" -Title "Title" -Manager manager
-	Get-ADUser $userName | Move-ADObject -TargetPath "OU=Department,OU=Users,DC=domain,DC=com"
+switch ($employeeType) {
+	1 {
+		Set-ADUser -Identity $userName -Office "Office" -Department "Dept" -Title "Title" -Manager manager
+		Get-ADUser $userName | Move-ADObject -TargetPath "OU=Department,OU=Users,DC=domain,DC=com"
 
-    Add-ADGroupMember -Identity GroupsForThisDept1 -Members $userName
-    Add-ADGroupMember -Identity GroupsForThisDept2 -Members $userName
-	
-		<# Add-DistributionGroupMember is for regular distribution lists
-		Add-UnifiedGroupLinks is for O365 groups
-		The 3-minute start/sleep delay is to allow time for the account to be fully created/propagate across O365 servers.
-			**Without it, have noticed strange errors where O365 doesn't recognize the account as valid #>
+		"GroupID1","GroupID2" | Add-ADGroupMember -Members $userName
+		
+			<# Add-DistributionGroupMember is for regular distribution lists
+			Add-UnifiedGroupLinks is for O365 groups
+			The 3-minute start/sleep delay is to allow time for the account to be fully created/propagate across O365 servers.
+				**Without it, have noticed strange errors where O365 doesn't recognize the account as valid #>
 		if ( $email -eq 'Y' ) {
 			Set-MsolUser -UserPrincipalName $emailAddress -Department "Dept" -City "Location" -Title "Title"
 			Start-Sleep -Seconds 180
@@ -81,15 +91,14 @@ if ( $employeeType -eq 1 ) {
 			Add-DistributionGroupMember -Identity GroupsForThisDept2 -Member $emailAddress
 			Add-UnifiedGroupLinks -Identity "O365 Group Name" -LinkType Members -Links $emailAddress
 		}
-}
+	}
+	
+	# EMPLOYEE TYPE 2
+	2 {
+		Set-ADUser -Identity $userName -Office "OtherOffice" -Department "Dept2" -Title "Title" -Manager manager2
+		Get-ADUser $userName | Move-ADObject -TargetPath "OU=Department2,OU=Users,DC=domain,DC=com"
 
-# Another department
-if ( $employeeType -eq 2 ) {
-	Set-ADUser -Identity $userName -Office "OtherOffice" -Department "Dept2" -Title "Title" -Manager manager2
-	Get-ADUser $userName | Move-ADObject -TargetPath "OU=Department2,OU=Users,DC=domain,DC=com"
-
-    Add-ADGroupMember -Identity GroupsForThisDept1 -Members $userName
-    Add-ADGroupMember -Identity GroupsForThisDept2 -Members $userName
+		"GroupID1","GroupID2" | Add-ADGroupMember -Members $userName
 	
 		if ( $email -eq 'Y' ) {
 			Set-MsolUser -UserPrincipalName $emailAddress -Department "Dept" -City "Location" -Title "Title"
@@ -98,17 +107,10 @@ if ( $employeeType -eq 2 ) {
 			Add-DistributionGroupMember -Identity GroupsForThisDept2 -Member $emailAddress
 			Add-UnifiedGroupLinks -Identity "O365 Group Name" -LinkType Members -Links $emailAddress
 		}
+	}
 }
-
-# Creates a new personal shared-drive folder on the file server
-$HomeDrive = 'Z:'
-$UserRoot = '\\fs01\Users$\'
-$HomeDirectory = $UserRoot+$userName
-Set-ADUser $userName -HomeDrive $HomeDrive -HomeDirectory $HomeDirectory
-New-Item -Path $HomeDirectory -Type Directory -Force
 
 # Groups that are meant to be accessed by all employees
-Add-ADGroupMember -Identity CommonDrive -Members $userName
-Add-ADGroupMember -Identity CommonDrive2 -Members $userName
+"GroupID1","GroupID2" | Add-ADGroupMember -Members $userName
 
 Get-PSSession | Remove-PSSession
